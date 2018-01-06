@@ -51,6 +51,9 @@ class BlackOilLocalResidual : public GET_PROP_TYPE(TypeTag, DiscLocalResidual)
     typedef typename GET_PROP_TYPE(TypeTag, EqVector) EqVector;
     typedef typename GET_PROP_TYPE(TypeTag, RateVector) RateVector;
     typedef typename GET_PROP_TYPE(TypeTag, FluidSystem) FluidSystem;
+    
+    //sogo
+    typedef typename GET_PROP_TYPE(TypeTag, PrimaryVariables) PrimaryVariables;
 
     enum { conti0EqIdx = Indices::conti0EqIdx };
     enum { numEq = GET_PROP_VALUE(TypeTag, NumEq) };
@@ -92,6 +95,9 @@ public:
 
         storage = 0.0;
 
+        //sogo
+        const auto& priVars = elemCtx.primaryVars(dofIdx, timeIdx);
+
         for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++phaseIdx) {
             if (!FluidSystem::phaseIsActive(phaseIdx))
                 continue;
@@ -104,6 +110,8 @@ public:
 
             storage[conti0EqIdx + activeCompIdx] += surfaceVolume;
 
+            //sogo
+            /*
             // account for dissolved gas
             if (phaseIdx == oilPhaseIdx && FluidSystem::enableDissolvedGas()) {
                 unsigned activeGasCompIdx = Indices::canonicalToActiveComponentIndex(gasCompIdx);
@@ -111,6 +119,23 @@ public:
                     Toolbox::template decay<LhsEval>(intQuants.fluidState().Rs())
                     * surfaceVolume;
             }
+             */
+            
+            // sogo  account for dissolved gas
+            if (phaseIdx == oilPhaseIdx && FluidSystem::enableDissolvedGas()) {
+                unsigned activeGasCompIdx = Indices::canonicalToActiveComponentIndex(gasCompIdx);
+                if(priVars.primaryVarsMeaning() == PrimaryVariables::Sw_po_Rs){
+                    //if(!FluidSystem::phaseIsActive(gasPhaseIdx)){
+                    storage[conti0EqIdx + activeGasCompIdx] +=
+                    Toolbox::template decay<LhsEval>(intQuants.fluidState().Rs())
+                    * surfaceVolume;
+                } else {
+                    storage[conti0EqIdx + activeGasCompIdx] +=
+                    Toolbox::template decay<LhsEval>(intQuants.fluidState().Rs1())
+                    * surfaceVolume;
+                }
+            }
+            
 
             // account for vaporized oil
             if (phaseIdx == gasPhaseIdx && FluidSystem::enableVaporizedOil()) {
@@ -166,10 +191,18 @@ public:
 
             unsigned upIdx = static_cast<unsigned>(extQuants.upstreamIndex(phaseIdx));
             const IntensiveQuantities& up = elemCtx.intensiveQuantities(upIdx, timeIdx);
+            
+            //sogo upstream
+            const auto& priVars = elemCtx.primaryVars(upIdx, timeIdx);
+            
             if (upIdx == focusDofIdx)
-                evalPhaseFluxes_<Evaluation>(flux, phaseIdx, extQuants, up);
+                //sogo
+                //evalPhaseFluxes_<Evaluation>(flux, phaseIdx, extQuants, up);
+                 evalPhaseFluxes_<Evaluation>(flux, phaseIdx, extQuants, up, priVars);
             else
-                evalPhaseFluxes_<Scalar>(flux, phaseIdx, extQuants, up);
+                //sogo
+                //evalPhaseFluxes_<Scalar>(flux, phaseIdx, extQuants, up);
+                evalPhaseFluxes_<Scalar>(flux, phaseIdx, extQuants, up, priVars);
         }
 
         if (!blackoilConserveSurfaceVolume) {
@@ -207,7 +240,8 @@ protected:
     void evalPhaseFluxes_(RateVector& flux,
                           unsigned phaseIdx,
                           const ExtensiveQuantities& extQuants,
-                          const IntensiveQuantities& up) const
+                          const IntensiveQuantities& up,
+                          /*sogo*/ const  PrimaryVariables& priVars) const
     {
         unsigned compIdx = Indices::canonicalToActiveComponentIndex(FluidSystem::solventComponentIndex(phaseIdx));
         const auto& fs = up.fluidState();
@@ -218,7 +252,9 @@ protected:
 
         flux[conti0EqIdx + compIdx] +=
                 surfaceVolumeFlux;
-
+        
+        //sogo
+        /*
         // dissolved gas (in the oil phase).
         if (phaseIdx == oilPhaseIdx && FluidSystem::enableDissolvedGas()) {
             flux[conti0EqIdx + Indices::canonicalToActiveComponentIndex(gasCompIdx)] +=
@@ -226,7 +262,23 @@ protected:
                     * surfaceVolumeFlux;
 
         }
-
+         */
+        
+        // sogo dissolved gas (in the oil phase).
+        if (phaseIdx == oilPhaseIdx && FluidSystem::enableDissolvedGas()) {
+            if(priVars.primaryVarsMeaning() == PrimaryVariables::Sw_po_Rs){
+                //if(!FluidSystem::phaseIsActive(gasPhaseIdx)) {
+                flux[conti0EqIdx + Indices::canonicalToActiveComponentIndex(gasCompIdx)] +=
+                Toolbox::template decay<UpEval>(fs.Rs())
+                * surfaceVolumeFlux;
+            } else {
+                flux[conti0EqIdx + Indices::canonicalToActiveComponentIndex(gasCompIdx)] +=
+                Toolbox::template decay<UpEval>(fs.Rs1())
+                * surfaceVolumeFlux;
+            }
+            
+        }
+        
         // vaporized oil (in the gas phase).
         if (phaseIdx == gasPhaseIdx && FluidSystem::enableVaporizedOil()) {
             flux[conti0EqIdx + Indices::canonicalToActiveComponentIndex(oilCompIdx)] +=

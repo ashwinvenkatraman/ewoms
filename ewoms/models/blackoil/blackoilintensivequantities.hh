@@ -200,6 +200,18 @@ public:
                                                             pvtRegionIdx,
                                                             SoMax);
                 fluidState_.setRs(RsSat);
+                
+                //sogo
+
+                const Evaluation& RsSat2 =
+                FluidSystem::saturatedDissolutionFactor_Pc(fluidState_,
+                                                           oilPhaseIdx,
+                                                           gasPhaseIdx,
+                                                           pvtRegionIdx,
+                                                           SoMax);
+                fluidState_.setRs1(RsSat2);
+
+                
             }
             else
                 fluidState_.setRs(0.0);
@@ -299,10 +311,18 @@ public:
             rho = fluidState_.invB(oilPhaseIdx);
             rho *= FluidSystem::referenceDensity(oilPhaseIdx, pvtRegionIdx);
             if (FluidSystem::enableDissolvedGas()) {
-                rho +=
-                    fluidState_.invB(oilPhaseIdx) *
-                    fluidState_.Rs() *
-                    FluidSystem::referenceDensity(gasPhaseIdx, pvtRegionIdx);
+                //sogo
+                if (priVars.primaryVarsMeaning() == PrimaryVariables::Sw_po_Sg) {
+                    rho +=
+                            fluidState_.invB(oilPhaseIdx) *
+                            fluidState_.Rs1() *
+                            FluidSystem::referenceDensity(gasPhaseIdx, pvtRegionIdx);
+                } else {
+                    rho +=
+                            fluidState_.invB(oilPhaseIdx) *
+                            fluidState_.Rs() *
+                            FluidSystem::referenceDensity(gasPhaseIdx, pvtRegionIdx);
+                }
             }
             fluidState_.setDensity(oilPhaseIdx, rho);
         }
