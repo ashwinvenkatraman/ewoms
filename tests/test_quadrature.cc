@@ -41,7 +41,7 @@
 
 #include <ewoms/disc/vcfv/vcfvstencil.hh>
 
-#include <opm/common/Unused.hpp>
+#include <opm/material/common/Unused.hpp>
 
 #if HAVE_DUNE_ALUGRID
 #define EWOMS_NO_ALUGRID_UNUSED
@@ -296,7 +296,6 @@ void testQuadrature()
 {
     std::cout << "testing SCV quadrature...\n";
 
-    std::bitset<dim> isPeriodic(false);
     std::array<int, dim> cellRes;
 
     std::fill(cellRes.begin(), cellRes.end(), 10);

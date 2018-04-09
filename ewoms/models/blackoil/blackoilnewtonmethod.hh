@@ -32,7 +32,7 @@
 
 #include <ewoms/common/signum.hh>
 
-#include <opm/common/Unused.hpp>
+#include <opm/material/common/Unused.hpp>
 
 namespace Ewoms {
 
@@ -135,8 +135,7 @@ protected:
         succeeded = comm.min(succeeded);
 
         if (!succeeded)
-            OPM_THROW(Opm::NumericalProblem,
-                      "A process did not succeed in adapting the primary variables");
+            throw Opm::NumericalIssue("A process did not succeed in adapting the primary variables");
 
         numPriVarsSwitched_ = comm.sum(numPriVarsSwitched_);
     }
@@ -148,8 +147,12 @@ protected:
                                  PrimaryVariables& nextValue,
                                  const PrimaryVariables& currentValue,
                                  const EqVector& update,
-                                 const EqVector& currentResidual OPM_UNUSED)
+                                 const EqVector& currentResidual)
     {
+        currentValue.checkDefined();
+        Opm::Valgrind::CheckDefined(update);
+        Opm::Valgrind::CheckDefined(currentResidual);
+
         for (unsigned eqIdx = 0; eqIdx < numEq; ++eqIdx) {
             // calculate the update of the current primary variable. For the
             // black-oil model we limit the pressure and saturation updates, but do
@@ -182,6 +185,8 @@ protected:
         // switch the new primary variables to something which is physically meaningful
         if (nextValue.adaptPrimaryVariables(this->problem(), globalDofIdx))
             ++ numPriVarsSwitched_;
+
+        nextValue.checkDefined();
     }
 
 private:

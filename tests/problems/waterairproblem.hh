@@ -41,7 +41,7 @@
 #include <opm/material/thermal/ConstantSolidHeatCapLaw.hpp>
 #include <opm/material/thermal/SomertonThermalConductionLaw.hpp>
 #include <opm/material/constraintsolvers/ComputeFromReferencePhase.hpp>
-#include <opm/common/Unused.hpp>
+#include <opm/material/common/Unused.hpp>
 
 #include <dune/grid/yaspgrid.hh>
 #include <dune/grid/io/file/dgfparser/dgfyasp.hh>
@@ -131,8 +131,13 @@ SET_STRING_PROP(WaterAirBaseProblem, GridFile, "./data/waterair.dgf");
 SET_TAG_PROP(WaterAirBaseProblem, LinearSolverSplice, ParallelIstlLinearSolver);
 SET_TYPE_PROP(WaterAirBaseProblem, LinearSolverWrapper,
               Ewoms::Linear::SolverWrapperRestartedGMRes<TypeTag>);
+#if DUNE_VERSION_NEWER(DUNE_ISTL, 2,7)
+SET_TYPE_PROP(WaterAirBaseProblem, PreconditionerWrapper,
+              Ewoms::Linear::PreconditionerWrapperILU<TypeTag>);
+#else
 SET_TYPE_PROP(WaterAirBaseProblem, PreconditionerWrapper,
               Ewoms::Linear::PreconditionerWrapperILUn<TypeTag>);
+#endif
 SET_INT_PROP(WaterAirBaseProblem, PreconditionerOrder, 2);
 } // namespace Properties
 } // namespace Ewoms
@@ -527,7 +532,7 @@ private:
 
         typename FluidSystem::template ParameterCache<Scalar> paramCache;
         typedef Opm::ComputeFromReferencePhase<Scalar, FluidSystem> CFRP;
-        CFRP::solve(fs, paramCache, liquidPhaseIdx, /*setViscosity=*/false,  /*setEnthalpy=*/true);
+        CFRP::solve(fs, paramCache, liquidPhaseIdx, /*setViscosity=*/true,  /*setEnthalpy=*/true);
     }
 
     void computeThermalCondParams_(ThermalConductionLawParams& params, Scalar poro)

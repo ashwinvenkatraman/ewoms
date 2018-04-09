@@ -22,12 +22,12 @@
 */
 /*!
  * \file
- * \copydoc Ewoms::EclBaseGridManager
+ * \copydoc Ewoms::EclBaseVanguard
  */
-#ifndef EWOMS_ECL_BASE_GRID_MANAGER_HH
-#define EWOMS_ECL_BASE_GRID_MANAGER_HH
+#ifndef EWOMS_ECL_BASE_VANGUARD_HH
+#define EWOMS_ECL_BASE_VANGUARD_HH
 
-#include <ewoms/io/basegridmanager.hh>
+#include <ewoms/io/basevanguard.hh>
 #include <ewoms/common/propertysystem.hh>
 #include <ewoms/common/parametersystem.hh>
 
@@ -50,18 +50,20 @@
 
 namespace Ewoms {
 template <class TypeTag>
-class EclBaseGridManager;
+class EclBaseVanguard;
 
 namespace Properties {
-NEW_TYPE_TAG(EclBaseGridManager);
+NEW_TYPE_TAG(EclBaseVanguard);
 
-// declare the properties required by the for the ecl grid manager
+// declare the properties required by the for the ecl simulator vanguard
 NEW_PROP_TAG(Grid);
 NEW_PROP_TAG(EquilGrid);
 NEW_PROP_TAG(Scalar);
 NEW_PROP_TAG(EclDeckFileName);
+NEW_PROP_TAG(EclOutputDir);
 
-SET_STRING_PROP(EclBaseGridManager, EclDeckFileName, "ECLDECK.DATA");
+SET_STRING_PROP(EclBaseVanguard, EclDeckFileName, "ECLDECK.DATA");
+SET_STRING_PROP(EclBaseVanguard, EclOutputDir, ".");
 } // namespace Properties
 
 /*!
@@ -70,10 +72,10 @@ SET_STRING_PROP(EclBaseGridManager, EclDeckFileName, "ECLDECK.DATA");
  * \brief Helper class for grid instantiation of ECL file-format using problems.
  */
 template <class TypeTag>
-class EclBaseGridManager : public BaseGridManager<TypeTag>
+class EclBaseVanguard : public BaseVanguard<TypeTag>
 {
-    typedef BaseGridManager<TypeTag> ParentType;
-    typedef typename GET_PROP_TYPE(TypeTag, GridManager) Implementation;
+    typedef BaseVanguard<TypeTag> ParentType;
+    typedef typename GET_PROP_TYPE(TypeTag, Vanguard) Implementation;
     typedef typename GET_PROP_TYPE(TypeTag, Scalar) Scalar;
     typedef typename GET_PROP_TYPE(TypeTag, Simulator) Simulator;
 
@@ -86,23 +88,25 @@ protected:
 
 public:
     /*!
-     * \brief Register all run-time parameters for the grid manager.
+     * \brief Register the common run-time parameters for all ECL simulator vanguards.
      */
     static void registerParameters()
     {
         EWOMS_REGISTER_PARAM(TypeTag, std::string, EclDeckFileName,
                              "The name of the file which contains the ECL deck to be simulated");
+        EWOMS_REGISTER_PARAM(TypeTag, std::string, EclOutputDir,
+                             "The directory to which the ECL result files are written");
     }
 
     /*!
      * \brief Set the Opm::EclipseState and the Opm::Deck object which ought to be used
-     *        when the grid manager is instantiated.
+     *        when the simulator vanguard is instantiated.
      *
      * This is basically an optimization: In cases where the ECL input deck must be
      * examined to decide which simulator ought to be used, this avoids having to parse
      * the input twice. When this method is used, the caller is responsible for lifetime
      * management of these two objects, i.e., they are not allowed to be deleted as long
-     * as the grid manager object is alive.
+     * as the simulator vanguard object is alive.
      */
     static void setExternalDeck(Opm::Deck* deck, Opm::EclipseState* eclState, Opm::Schedule* schedule, Opm::SummaryConfig* summaryConfig)
     {
@@ -118,7 +122,7 @@ public:
      * This is the file format used by the commercial ECLiPSE simulator. Usually it uses
      * a cornerpoint description of the grid.
      */
-    EclBaseGridManager(Simulator& simulator)
+    EclBaseVanguard(Simulator& simulator)
         : ParentType(simulator)
     {
         int myRank = 0;
@@ -193,7 +197,33 @@ public:
             summaryConfig_ = externalSummaryConfig_;
         }
 
+        // retrieve the location set by the user
+        std::string outputDir = EWOMS_GET_PARAM(TypeTag, std::string, EclOutputDir);
+
+        // update the location for output
+        auto& ioConfig = eclState_->getIOConfig();
+        if (outputDir == "")
+            // If no output directory parameter is specified, use the output directory
+            // which Opm::IOConfig thinks that should be used. Normally this is the
+            // directory in which the input files are located.
+            outputDir = ioConfig.getOutputDir();
+
+        // ensure that the output directory exists and that it is a directory
+        if (!boost::filesystem::is_directory(outputDir)) {
+            try {
+                boost::filesystem::create_directories(outputDir);
+            }
+            catch (...) {
+                 throw std::runtime_error("Creation of output directory '"+outputDir+"' failed\n");
+            }
+        }
+
+        // specify the directory output. This is not a very nice mechanism because
+        // the eclState is supposed to be immutable here, IMO.
+        ioConfig.setOutputDir(outputDir);
+
         asImp_().createGrids_();
+        asImp_().filterCompletions_();
         asImp_().finalizeInit_();
     }
 
@@ -216,6 +246,10 @@ public:
     { return *eclState_; }
 
     const Opm::Schedule& schedule() const {
+        return *schedule_;
+    }
+
+    Opm::Schedule& schedule() {
         return *schedule_;
     }
 
@@ -316,7 +350,7 @@ private:
     static Opm::Deck* externalDeck_;
     static Opm::EclipseState* externalEclState_;
     static Opm::Schedule* externalSchedule_;
-    static Opm::SummaryConfig* externalSummaryConfig_; 
+    static Opm::SummaryConfig* externalSummaryConfig_;
     std::unique_ptr<Opm::Deck> internalDeck_;
     std::unique_ptr<Opm::EclipseState> internalEclState_;
     std::unique_ptr<Opm::Schedule> internalSchedule_;
@@ -331,16 +365,16 @@ private:
 };
 
 template <class TypeTag>
-Opm::Deck* EclBaseGridManager<TypeTag>::externalDeck_ = nullptr;
+Opm::Deck* EclBaseVanguard<TypeTag>::externalDeck_ = nullptr;
 
 template <class TypeTag>
-Opm::EclipseState* EclBaseGridManager<TypeTag>::externalEclState_;
+Opm::EclipseState* EclBaseVanguard<TypeTag>::externalEclState_;
 
 template <class TypeTag>
-Opm::Schedule* EclBaseGridManager<TypeTag>::externalSchedule_ = nullptr;
+Opm::Schedule* EclBaseVanguard<TypeTag>::externalSchedule_ = nullptr;
 
 template <class TypeTag>
-Opm::SummaryConfig* EclBaseGridManager<TypeTag>::externalSummaryConfig_ = nullptr;
+Opm::SummaryConfig* EclBaseVanguard<TypeTag>::externalSummaryConfig_ = nullptr;
 
 
 } // namespace Ewoms

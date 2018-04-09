@@ -1,21 +1,15 @@
 #!/bin/bash
 
 declare -a upstreams
-upstreams=(opm-common
-           libecl
-           opm-parser
-           opm-output
+upstreams=(libecl
+           opm-common
            opm-material
-           opm-grid
-           opm-core)
+           opm-grid)
 
 declare -A upstreamRev
-upstreamRev[opm-common]=master
 upstreamRev[libecl]=master
-upstreamRev[opm-parser]=master
-upstreamRev[opm-output]=master
+upstreamRev[opm-common]=master
 upstreamRev[opm-material]=master
-upstreamRev[opm-core]=master
 upstreamRev[opm-grid]=master
 
 if grep -q "opm-common=" <<< $ghprbCommentBody
@@ -49,7 +43,7 @@ printHeader ewoms
 # Setup opm-data
 if grep -q "with downstreams" <<< $ghprbCommentBody
 then
-  source $WORKSPACE/deps/opm-common/jenkins/setup-opm-data.sh
+  source $WORKSPACE/deps/opm-common/jenkins/setup-opm-tests.sh
 fi
 
 build_module_full ewoms

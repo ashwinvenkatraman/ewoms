@@ -39,8 +39,7 @@
 #include <opm/parser/eclipse/EclipseState/Schedule/CompletionSet.hpp>
 #include <opm/parser/eclipse/EclipseState/Schedule/Well.hpp>
 #include <opm/parser/eclipse/EclipseState/Schedule/TimeMap.hpp>
-#include <opm/common/ErrorMacros.hpp>
-#include <opm/common/Exceptions.hpp>
+#include <opm/material/common/Exceptions.hpp>
 
 #include <ewoms/common/propertysystem.hh>
 #include <ewoms/parallel/threadedentityiterator.hh>
@@ -104,6 +103,9 @@ public:
         {
             const Opm::Well* deckWell = deckSchedule.getWells()[deckWellIdx];
             const std::string& wellName = deckWell->name();
+            Scalar wellTemperature = 273.15 + 15.56; // [K]
+            if (deckWell->isInjector(/*timeStep=*/0))
+                wellTemperature = deckWell->getInjectionProperties(/*timeStep=*/0).temperature;
 
             // set the name of the well but not much else. (i.e., if it is not completed,
             // the well primarily serves as a placeholder.) The big rest of the well is
@@ -111,6 +113,7 @@ public:
             auto well = std::make_shared<Well>(simulator_);
             well->setName(wellName);
             well->setWellStatus(Well::Shut);
+            well->setTemperature(wellTemperature);
 
             wells_.push_back(well);
             wellNameToIndex_[well->name()] = wells_.size() - 1;
@@ -144,6 +147,9 @@ public:
                 continue;
 
             auto well = this->well(deckWell->name());
+
+            if (deckWell->isInjector(episodeIdx))
+                well->setTemperature(deckWell->getInjectionProperties(episodeIdx).temperature);
 
             Opm::WellCommon::StatusEnum deckWellStatus = deckWell->getStatus(episodeIdx);
             switch (deckWellStatus) {
@@ -183,8 +189,7 @@ public:
                     well->setInjectedPhaseIndex(FluidSystem::oilPhaseIdx);
                     break;
                 case Opm::WellInjector::MULTI:
-                    OPM_THROW(std::runtime_error,
-                              "Not implemented: Multi-phase injector wells");
+                    throw std::runtime_error("Not implemented: Multi-phase injector wells");
                 }
 
                 switch (injectProperties.controlMode) {
@@ -205,8 +210,7 @@ public:
                     break;
 
                 case Opm::WellInjector::GRUP:
-                    OPM_THROW(std::runtime_error,
-                              "Not implemented: Well groups");
+                    throw std::runtime_error("Not implemented: Well groups");
 
                 case Opm::WellInjector::CMODE_UNDEFINED:
                     std::cout << "Warning: Control mode of injection well " << well->name()
@@ -229,8 +233,7 @@ public:
                     break;
 
                 case Opm::WellInjector::MULTI:
-                    OPM_THROW(std::runtime_error,
-                              "Not implemented: Multi-phase injection wells");
+                    throw std::runtime_error("Not implemented: Multi-phase injection wells");
                 }
 
                 well->setMaximumSurfaceRate(injectProperties.surfaceInjectionRate);
@@ -274,8 +277,7 @@ public:
                     break;
 
                 case Opm::WellProducer::CRAT:
-                    OPM_THROW(std::runtime_error,
-                              "Not implemented: Linearly combined rates");
+                    throw std::runtime_error("Not implemented: Linearly combined rates");
 
                 case Opm::WellProducer::RESV:
                     well->setControlMode(Well::ControlMode::VolumetricReservoirRate);
@@ -292,8 +294,7 @@ public:
                     break;
 
                 case Opm::WellProducer::GRUP:
-                    OPM_THROW(std::runtime_error,
-                              "Not implemented: Well groups");
+                    throw std::runtime_error("Not implemented: Well groups");
 
                 case Opm::WellProducer::NONE:
                     // fall-through
@@ -343,10 +344,7 @@ public:
         assert( hasWell( wellName ) );
         const auto& it = wellNameToIndex_.find(wellName);
         if (it == wellNameToIndex_.end())
-        {
-            OPM_THROW(std::runtime_error,
-                      "No well called '" << wellName << "'found");
-        }
+            throw std::runtime_error("No well called '"+wellName+"'found");
         return it->second;
     }
 
@@ -402,7 +400,7 @@ public:
             wells_[wellIdx]->beginIterationPreProcess();
 
         // call the accumulation routines
-        ThreadedEntityIterator<GridView, /*codim=*/0> threadedElemIt(simulator_.gridManager().gridView());
+        ThreadedEntityIterator<GridView, /*codim=*/0> threadedElemIt(simulator_.vanguard().gridView());
 #ifdef _OPENMP
 #pragma omp parallel
 #endif
@@ -556,7 +554,7 @@ public:
     void deserialize(Restarter& res OPM_UNUSED)
     {
         // initialize the wells for the current episode
-        beginEpisode(simulator_.gridManager().eclState(), simulator_.gridManager().schedule(), /*wasRestarted=*/true);
+        beginEpisode(simulator_.vanguard().eclState(), simulator_.vanguard().schedule(), /*wasRestarted=*/true);
     }
 
     /*!
@@ -610,7 +608,7 @@ protected:
                              std::vector<bool>& gridDofIsPenetrated) const
     {
         auto& model = simulator_.model();
-        const auto& gridManager = simulator_.gridManager();
+        const auto& vanguard = simulator_.vanguard();
 
         // first, remove all wells from the reservoir
         model.clearAuxiliaryModules();
@@ -623,7 +621,7 @@ protected:
 
         //////
         // tell the active wells which DOFs they contain
-        const auto gridView = simulator_.gridManager().gridView();
+        const auto gridView = simulator_.vanguard().gridView();
 
         gridDofIsPenetrated.resize(model.numGridDof());
         std::fill(gridDofIsPenetrated.begin(), gridDofIsPenetrated.end(), false);
@@ -640,7 +638,7 @@ protected:
             elemCtx.updateStencil(elem);
             for (unsigned dofIdx = 0; dofIdx < elemCtx.numPrimaryDof(/*timeIdx=*/0); ++ dofIdx) {
                 unsigned globalDofIdx = elemCtx.globalSpaceIndex(dofIdx, /*timeIdx=*/0);
-                unsigned cartesianDofIdx = gridManager.cartesianIndex(globalDofIdx);
+                unsigned cartesianDofIdx = vanguard.cartesianIndex(globalDofIdx);
 
                 if (wellCompletions.count(cartesianDofIdx) == 0)
                     // the current DOF is not contained in any well, so we must skip
@@ -667,14 +665,14 @@ protected:
 
     void computeWellCompletionsMap_(unsigned reportStepIdx OPM_UNUSED, WellCompletionsMap& cartesianIdxToCompletionMap)
     {
-        const auto& deckSchedule = simulator_.gridManager().schedule();
+        const auto& deckSchedule = simulator_.vanguard().schedule();
 
 #ifndef NDEBUG
-        const auto& eclState = simulator_.gridManager().eclState();
+        const auto& eclState = simulator_.vanguard().eclState();
         const auto& eclGrid = eclState.getInputGrid();
-        assert( int(eclGrid.getNX()) == simulator_.gridManager().cartesianDimensions()[ 0 ] );
-        assert( int(eclGrid.getNY()) == simulator_.gridManager().cartesianDimensions()[ 1 ] );
-        assert( int(eclGrid.getNZ()) == simulator_.gridManager().cartesianDimensions()[ 2 ] );
+        assert( int(eclGrid.getNX()) == simulator_.vanguard().cartesianDimensions()[ 0 ] );
+        assert( int(eclGrid.getNY()) == simulator_.vanguard().cartesianDimensions()[ 1 ] );
+        assert( int(eclGrid.getNZ()) == simulator_.vanguard().cartesianDimensions()[ 2 ] );
 #endif
 
         // compute the mapping from logically Cartesian indices to the well the
@@ -687,7 +685,7 @@ protected:
             if (!hasWell(wellName))
             {
 #ifndef NDEBUG
-                if( simulator_.gridManager().grid().comm().size() == 1 )
+                if( simulator_.vanguard().grid().comm().size() == 1 )
                 {
                     std::cout << "Well '" << wellName << "' suddenly appears in the completions "
                               << "for the report step, but has not been previously specified. "
@@ -705,7 +703,7 @@ protected:
                 cartesianCoordinate[ 0 ] = completion.getI();
                 cartesianCoordinate[ 1 ] = completion.getJ();
                 cartesianCoordinate[ 2 ] = completion.getK();
-                unsigned cartIdx = simulator_.gridManager().cartesianIndex( cartesianCoordinate );
+                unsigned cartIdx = simulator_.vanguard().cartesianIndex( cartesianCoordinate );
 
                 // in this code we only support each cell to be part of at most a single
                 // well. TODO (?) change this?
@@ -719,7 +717,7 @@ protected:
 
     void updateWellParameters_(unsigned reportStepIdx, const WellCompletionsMap& wellCompletions)
     {
-        const auto& deckSchedule = simulator_.gridManager().schedule();
+        const auto& deckSchedule = simulator_.vanguard().schedule();
         const std::vector<const Opm::Well*>& deckWells = deckSchedule.getWells(reportStepIdx);
 
         // set the reference depth for all wells
@@ -736,8 +734,8 @@ protected:
 
         // associate the well completions with grid cells and register them in the
         // Peaceman well object
-        const auto& gridManager = simulator_.gridManager();
-        const GridView gridView = gridManager.gridView();
+        const auto& vanguard = simulator_.vanguard();
+        const GridView gridView = vanguard.gridView();
 
         ElementContext elemCtx(simulator_);
         auto elemIt = gridView.template begin</*codim=*/0>();
@@ -753,7 +751,7 @@ protected:
             {
                 assert( elemCtx.numPrimaryDof(/*timeIdx=*/0) == 1 );
                 unsigned globalDofIdx = elemCtx.globalSpaceIndex(dofIdx, /*timeIdx=*/0);
-                unsigned cartesianDofIdx = gridManager.cartesianIndex(globalDofIdx);
+                unsigned cartesianDofIdx = vanguard.cartesianIndex(globalDofIdx);
 
                 if (wellCompletions.count(cartesianDofIdx) == 0)
                     // the current DOF is not contained in any well, so we must skip
@@ -772,7 +770,7 @@ protected:
                 try {
                     eclWell->setRadius(elemCtx, dofIdx, 0.5*completion->getDiameter());
                 }
-                catch (const std::logic_error& e)
+                catch (const std::logic_error&)
                 {}
 
                 // overwrite the automatically computed effective

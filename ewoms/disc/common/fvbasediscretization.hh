@@ -56,10 +56,9 @@
 #include <ewoms/common/timerguard.hh>
 
 #include <opm/material/common/MathToolbox.hpp>
-#include <opm/common/Valgrind.hpp>
-#include <opm/common/Unused.hpp>
-#include <opm/common/ErrorMacros.hpp>
-#include <opm/common/Exceptions.hpp>
+#include <opm/material/common/Valgrind.hpp>
+#include <opm/material/common/Unused.hpp>
+#include <opm/material/common/Exceptions.hpp>
 
 #include <dune/common/fvector.hh>
 #include <dune/common/fmatrix.hh>
@@ -231,6 +230,11 @@ SET_BOOL_PROP(FvBaseDiscretization, EnableGridAdaptation, false);
 //! Enable the VTK output by default
 SET_BOOL_PROP(FvBaseDiscretization, EnableVtkOutput, true);
 
+//! By default, write the VTK output to asynchronously to disk
+//!
+//! This has only an effect if EnableVtkOutput is true
+SET_BOOL_PROP(FvBaseDiscretization, EnableAsyncVtkOutput, true);
+
 //! Set the format of the VTK output to ASCII by default
 SET_INT_PROP(FvBaseDiscretization, VtkOutputFormat, Dune::VTK::ascii);
 
@@ -379,7 +383,7 @@ public:
         , localLinearizer_(ThreadManager::maxThreads())
         , linearizer_(new Linearizer())
 #if HAVE_DUNE_FEM
-        , space_( simulator.gridManager().gridPart() )
+        , space_( simulator.vanguard().gridPart() )
 #else
         , space_( asImp_().numGridDof() )
 #endif
@@ -390,18 +394,18 @@ public:
     {
 #if HAVE_DUNE_FEM
         if (enableGridAdaptation_ && !Dune::Fem::Capabilities::isLocallyAdaptive<Grid>::v)
-            OPM_THROW(Opm::NotImplemented,
-                      "Grid adaptation enabled, but chosen Grid is not capable of adaptivity");
+            throw std::invalid_argument("Grid adaptation enabled, but chosen Grid is not capable"
+                                        " of adaptivity");
 #else
         if (enableGridAdaptation_)
-            OPM_THROW(Opm::NotImplemented,
-                      "Grid adaptation currently requires the presence of the dune-fem module");
+            throw std::invalid_argument("Grid adaptation currently requires the presence of the "
+                                        "dune-fem module");
 #endif
         bool isEcfv = std::is_same<Discretization, EcfvDiscretization<TypeTag> >::value;
         if (enableGridAdaptation_ && !isEcfv)
-            OPM_THROW(Opm::NotImplemented,
-                      "Grid adaptation currently only works for the element-centered finite "
-                      "volume discretization (is: " << Dune::className<Discretization>() << ")");
+            throw std::invalid_argument("Grid adaptation currently only works for the "
+                                        "element-centered finite volume discretization (is: "
+                                        +Dune::className<Discretization>()+")");
 
         enableStorageCache_ = EWOMS_GET_PARAM(TypeTag, bool, EnableStorageCache);
 
@@ -574,12 +578,19 @@ public:
         // synchronize the ghost DOFs (if necessary)
         asImp_().syncOverlap();
 
-        // also set the solution of the "previous" time steps to the
-        // initial solution.
+        simulator_.problem().initialSolutionApplied();
+
+        // also set the solutions of the "previous" time steps to the initial solution.
         for (unsigned timeIdx = 1; timeIdx < historySize; ++timeIdx)
             solution(timeIdx) = solution(/*timeIdx=*/0);
 
-        simulator_.problem().initialSolutionApplied();
+#ifndef NDEBUG
+        for (unsigned timeIdx = 0; timeIdx < historySize; ++timeIdx)  {
+            const auto& sol = solution(timeIdx);
+            for (unsigned dofIdx = 0; dofIdx < sol.size(); ++dofIdx)
+                sol[dofIdx].checkDefined();
+        }
+#endif // NDEBUG
     }
 
     /*!
@@ -1054,26 +1065,20 @@ public:
      * \param timeIdx The index of the solution used by the time discretization.
      */
     const SolutionVector& solution(unsigned timeIdx) const
-    {
-        return solution_[timeIdx]->blockVector();
-    }
+    { return solution_[timeIdx]->blockVector(); }
 
     /*!
      * \copydoc solution(int) const
      */
     SolutionVector& solution(unsigned timeIdx)
-    {
-        return solution_[timeIdx]->blockVector();
-    }
+    { return solution_[timeIdx]->blockVector(); }
 
   protected:
     /*!
      * \copydoc solution(int) const
      */
     SolutionVector& mutableSolution(unsigned timeIdx) const
-    {
-        return solution_[timeIdx]->blockVector();
-    }
+    { return solution_[timeIdx]->blockVector(); }
 
   public:
     /*!
@@ -1173,10 +1178,16 @@ public:
     {
         Ewoms::TimerGuard prePostProcessGuard(prePostProcessTimer_);
 
-#if HAVE_VALGRIND
-        for (size_t i = 0; i < asImp_().solution(/*timeIdx=*/0).size(); ++i)
-            asImp_().solution(/*timeIdx=*/0)[i].checkDefined();
-#endif // HAVE_VALGRIND
+#ifndef NDEBUG
+        for (unsigned timeIdx = 0; timeIdx < historySize; ++timeIdx) {
+            // Make sure that the primary variables are defined. Note that because of padding
+            // bytes, we can't just simply ask valgrind to check the whole solution vectors
+            // for definedness...
+            for (size_t i = 0; i < asImp_().solution(/*timeIdx=*/0).size(); ++i) {
+                asImp_().solution(timeIdx)[i].checkDefined();
+            }
+        }
+#endif // NDEBUG
 
         // make sure all timers are prestine
         prePostProcessTimer_.halt();
@@ -1202,6 +1213,17 @@ public:
             throw;
         }
 
+#ifndef NDEBUG
+        for (unsigned timeIdx = 0; timeIdx < historySize; ++timeIdx) {
+            // Make sure that the primary variables are defined. Note that because of padding
+            // bytes, we can't just simply ask valgrind to check the whole solution vectors
+            // for definedness...
+            for (size_t i = 0; i < asImp_().solution(/*timeIdx=*/0).size(); ++i) {
+                asImp_().solution(timeIdx)[i].checkDefined();
+            }
+        }
+#endif // NDEBUG
+
         prePostProcessTimer_ += newtonMethod_.prePostProcessTimer();
         linearizeTimer_ += newtonMethod_.linearizeTimer();
         solveTimer_ += newtonMethod_.solveTimer();
@@ -1214,15 +1236,16 @@ public:
             asImp_().updateFailed();
         prePostProcessTimer_.stop();
 
-#if HAVE_VALGRIND
-        // make sure that the "non-pseudo" primary variables are defined. Note that
-        // because of the padding, we can't just simply ask valgrind to check the whole
-        // solution vectors for definedness...
-        for (size_t i = 0; i < asImp_().solution(/*timeIdx=*/0).size(); ++i) {
-            for (size_t eqIdx = 0; eqIdx < numEq; ++eqIdx)
-                Opm::Valgrind::CheckDefined(asImp_().solution(/*timeIdx=*/0)[i][eqIdx]);
+#ifndef NDEBUG
+        for (unsigned timeIdx = 0; timeIdx < historySize; ++timeIdx) {
+            // Make sure that the primary variables are defined. Note that because of padding
+            // bytes, we can't just simply ask valgrind to check the whole solution vectors
+            // for definedness...
+            for (size_t i = 0; i < asImp_().solution(/*timeIdx=*/0).size(); ++i) {
+                asImp_().solution(timeIdx)[i].checkDefined();
+            }
         }
-#endif // HAVE_VALGRIND
+#endif // NDEBUG
 
         return converged;
     }
@@ -1308,6 +1331,16 @@ public:
         // update at a physically meaningful solution.
         solution(/*timeIdx=*/0) = solution(/*timeIdx=*/1);
         invalidateIntensiveQuantitiesCache(/*timeIdx=*/0);
+
+#ifndef NDEBUG
+        for (unsigned timeIdx = 0; timeIdx < historySize; ++timeIdx) {
+            // Make sure that the primary variables are defined. Note that because of padding
+            // bytes, we can't just simply ask valgrind to check the whole solution vectors
+            // for definedness...
+            for (size_t i = 0; i < asImp_().solution(/*timeIdx=*/0).size(); ++i)
+                asImp_().solution(timeIdx)[i].checkDefined();
+        }
+#endif // NDEBUG
     }
 
     /*!
@@ -1340,9 +1373,8 @@ public:
     template <class Restarter>
     void serialize(Restarter& res OPM_UNUSED)
     {
-        OPM_THROW(std::runtime_error,
-                  "Not implemented: The discretization chosen for this problem does not support"
-                  " restart files. (serialize() method unimplemented)");
+        throw std::runtime_error("Not implemented: The discretization chosen for this problem "
+                                 "does not support restart files. (serialize() method unimplemented)");
     }
 
     /*!
@@ -1355,9 +1387,8 @@ public:
     template <class Restarter>
     void deserialize(Restarter& res OPM_UNUSED)
     {
-        OPM_THROW(std::runtime_error,
-                  "Not implemented: The discretization chosen for this problem does not support"
-                  " restart files. (deserialize() method unimplemented)");
+        throw std::runtime_error("Not implemented: The discretization chosen for this problem "
+                                 "does not support restart files. (deserialize() method unimplemented)");
     }
 
     /*!
@@ -1376,7 +1407,8 @@ public:
 
         // write phase state
         if (!outstream.good()) {
-            OPM_THROW(std::runtime_error, "Could not serialize degree of freedom " << dofIdx);
+            throw std::runtime_error("Could not serialize degree of freedom "
+                                     +std::to_string(dofIdx));
         }
 
         for (unsigned eqIdx = 0; eqIdx < numEq; ++eqIdx) {
@@ -1400,8 +1432,8 @@ public:
 
         for (unsigned eqIdx = 0; eqIdx < numEq; ++eqIdx) {
             if (!instream.good())
-                OPM_THROW(std::runtime_error,
-                          "Could not deserialize degree of freedom " << dofIdx);
+                throw std::runtime_error("Could not deserialize degree of freedom "
+                                         +std::to_string(dofIdx));
             instream >> solution(/*timeIdx=*/0)[dofIdx][eqIdx];
         }
     }
@@ -1410,8 +1442,7 @@ public:
      * \brief Returns the number of degrees of freedom (DOFs) for the computational grid
      */
     size_t numGridDof() const
-    { OPM_THROW(std::logic_error,
-                "The discretization class must implement the numGridDof() method!"); }
+    { throw std::logic_error("The discretization class must implement the numGridDof() method!"); }
 
     /*!
      * \brief Returns the number of degrees of freedom (DOFs) of the auxiliary equations
@@ -1438,8 +1469,7 @@ public:
      *        discretization's degrees of freedoms are to indices.
      */
     const DofMapper& dofMapper() const
-    { OPM_THROW(std::logic_error,
-                "The discretization class must implement the dofMapper() method!"); }
+    { throw std::logic_error("The discretization class must implement the dofMapper() method!"); }
 
     /*!
      * \brief Returns the mapper for vertices to indices.
@@ -1670,9 +1700,8 @@ public:
         if (enableGridAdaptation_
             && !std::is_same<DiscreteFunction, BlockVectorWrapper>::value)
         {
-            OPM_THROW(Opm::NotImplemented,
-                      "Problems which require auxiliary modules cannot be used in conjunction "
-                      "with dune-fem");
+            throw std::invalid_argument("Problems which require auxiliary modules cannot be used in"
+                                      " conjunction with dune-fem");
         }
 
         size_t numDof = numTotalDof();
@@ -1728,7 +1757,7 @@ public:
             restrictProlong_.reset(
                 new RestrictProlong( DiscreteFunctionRestrictProlong(*(solution_[/*timeIdx=*/ 0] )),
                                      simulator_.problem().restrictProlongOperator() ) );
-            adaptationManager_.reset( new AdaptationManager( simulator_.gridManager().grid(), *restrictProlong_ ) );
+            adaptationManager_.reset( new AdaptationManager( simulator_.vanguard().grid(), *restrictProlong_ ) );
         }
         return *adaptationManager_;
     }

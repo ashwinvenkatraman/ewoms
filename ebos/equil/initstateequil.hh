@@ -34,7 +34,7 @@
 
 #include <ewoms/common/propertysystem.hh>
 
-#include <dune/grid/cpgrid/GridHelpers.hpp>
+#include <opm/grid/cpgrid/GridHelpers.hpp>
 
 #include <opm/parser/eclipse/Units/Units.hpp>
 #include <opm/parser/eclipse/EclipseState/EclipseState.hpp>
@@ -649,18 +649,6 @@ phasePressures(const Grid& grid,
     return press;
 }
 
-template <class Grid,
-          class Region,
-          class CellRange>
-std::vector<double>
-temperature(const Grid& /* G */,
-            const Region& /* reg */,
-            const CellRange& cells)
-{
-    // use the standard temperature for everything for now
-    return std::vector<double>(cells.size(), 273.15 + 20.0);
-}
-
 /**
  * Compute initial phase saturations by means of equilibration.
  *
@@ -705,7 +693,7 @@ phaseSaturations(const Grid& grid,
                  std::vector< std::vector<double> >& phasePressures)
 {
     if (!FluidSystem::phaseIsActive(FluidSystem::oilPhaseIdx)) {
-        OPM_THROW(std::runtime_error, "Cannot initialise: not handling water-gas cases.");
+        throw std::runtime_error("Cannot initialise: not handling water-gas cases.");
     }
 
     std::vector< std::vector<double> > phaseSaturations = phasePressures; // Just to get the right size.
@@ -898,7 +886,7 @@ getEquil(const Opm::EclipseState& state)
     const auto& init = state.getInitConfig();
 
     if(!init.hasEquil()) {
-        OPM_THROW(std::domain_error, "Deck does not provide equilibration data.");
+        throw std::domain_error("Deck does not provide equilibration data.");
     }
 
     const auto& equil = init.getEquil();
@@ -945,7 +933,8 @@ public:
                          const Grid& grid,
                          const double grav = Opm::unit::gravity,
                          const bool applySwatInit = true)
-        : pp_(FluidSystem::numPhases,
+        : temperature_(grid.size(/*codim=*/0)),
+          pp_(FluidSystem::numPhases,
               std::vector<double>(grid.size(/*codim=*/0))),
           sat_(FluidSystem::numPhases,
                std::vector<double>(grid.size(/*codim=*/0))),
@@ -1000,16 +989,15 @@ public:
                                                                                            depthColumn, pbubColumn));
 
                     } else {
-                        OPM_THROW(std::runtime_error, "Cannot initialise: RSVD or PBVD table not available.");
+                        throw std::runtime_error("Cannot initialise: RSVD or PBVD table not available.");
                     }
 
                 }
                 else {
                     if (rec[i].gasOilContactDepth() != rec[i].datumDepth()) {
-                        OPM_THROW(std::runtime_error,
-                                  "Cannot initialise: when no explicit RSVD table is given, \n"
-                                  "datum depth must be at the gas-oil-contact. "
-                                  "In EQUIL region " << (i + 1) << "  (counting from 1), this does not hold.");
+                        throw std::runtime_error("Cannot initialise: when no explicit RSVD table is given, \n"
+                                                 "datum depth must be at the gas-oil-contact. "
+                                                 "In EQUIL region "+std::to_string(i + 1)+"  (counting from 1), this does not hold.");
                     }
                     const double pContact = rec[i].datumDepthPressure();
                     const double TContact = 273.15 + 20; // standard temperature for now
@@ -1048,15 +1036,15 @@ public:
                         rvFunc_.push_back(std::make_shared<Miscibility::PDVD<FluidSystem>>(pvtIdx,
                                                                                            depthColumn, pdewColumn));
                     } else {
-                        OPM_THROW(std::runtime_error, "Cannot initialise: RVVD or PDCD table not available.");
+                        throw std::runtime_error("Cannot initialise: RVVD or PDCD table not available.");
                     }
                 }
                 else {
                     if (rec[i].gasOilContactDepth() != rec[i].datumDepth()) {
-                        OPM_THROW(std::runtime_error,
+                        throw std::runtime_error(
                                   "Cannot initialise: when no explicit RVVD table is given, \n"
                                   "datum depth must be at the gas-oil-contact. "
-                                  "In EQUIL region " << (i + 1) << "  (counting from 1), this does not hold.");
+                                  "In EQUIL region "+std::to_string(i + 1)+" (counting from 1), this does not hold.");
                     }
                     const double pContact = rec[i].datumDepthPressure() + rec[i].gasOilContactCapillaryPressure();
                     const double TContact = 273.15 + 20; // standard temperature for now
@@ -1070,8 +1058,11 @@ public:
             }
         }
 
+        // extract the initial temperature
+        updateInitialTemperature_(eclipseState);
+
         // Compute pressures, saturations, rs and rv factors.
-        calcPressSatRsRv(eqlmap, rec, materialLawManager, grid, grav);
+        calcPressSatRsRv(eclipseState, eqlmap, rec, materialLawManager, grid, grav);
 
         // Modify oil pressure in no-oil regions so that the pressures of present phases can
         // be recovered from the oil pressure and capillary relations.
@@ -1080,16 +1071,27 @@ public:
     typedef std::vector<double> Vec;
     typedef std::vector<Vec>    PVec; // One per phase.
 
+    const Vec& temperature() const { return temperature_; }
     const PVec& press() const { return pp_; }
     const PVec& saturation() const { return sat_; }
     const Vec& rs() const { return rs_; }
     const Vec& rv() const { return rv_; }
 
 private:
+    void updateInitialTemperature_(const Opm::EclipseState& eclState)
+    {
+        // Get the initial temperature data
+        const std::vector<double>& tempiData =
+            eclState.get3DProperties().getDoubleGridProperty("TEMPI").getData();
+
+        temperature_ = tempiData;
+    }
+
     typedef EquilReg EqReg;
     std::vector< std::shared_ptr<Miscibility::RsFunction> > rsFunc_;
     std::vector< std::shared_ptr<Miscibility::RsFunction> > rvFunc_;
     std::vector<int> regionPvtIdx_;
+    Vec temperature_;
     PVec pp_;
     PVec sat_;
     Vec rs_;
@@ -1124,7 +1126,8 @@ private:
     }
 
     template <class RMap, class MaterialLawManager>
-    void calcPressSatRsRv(const RMap& reg,
+    void calcPressSatRsRv(const Opm::EclipseState& eclState,
+                          const RMap& reg,
                           const std::vector< Opm::EquilRecord >& rec,
                           MaterialLawManager& materialLawManager,
                           const Grid& grid,
@@ -1141,7 +1144,6 @@ private:
             const EqReg eqreg(rec[r], rsFunc_[r], rvFunc_[r], regionPvtIdx_[r]);
 
             PVec pressures = phasePressures<FluidSystem>(grid, eqreg, cells, grav);
-            const std::vector<double>& temp = temperature(grid, eqreg, cells);
             const PVec sat = phaseSaturations<FluidSystem>(grid, eqreg, cells, materialLawManager, swatInit_, pressures);
 
             const int np = FluidSystem::numPhases;
@@ -1154,8 +1156,8 @@ private:
             if (oil && gas) {
                 const int oilpos = FluidSystem::oilPhaseIdx;
                 const int gaspos = FluidSystem::gasPhaseIdx;
-                const Vec rsVals = computeRs(grid, cells, pressures[oilpos], temp, *(rsFunc_[r]), sat[gaspos]);
-                const Vec rvVals = computeRs(grid, cells, pressures[gaspos], temp, *(rvFunc_[r]), sat[oilpos]);
+                const Vec rsVals = computeRs(grid, cells, pressures[oilpos], temperature_, *(rsFunc_[r]), sat[gaspos]);
+                const Vec rvVals = computeRs(grid, cells, pressures[gaspos], temperature_, *(rvFunc_[r]), sat[oilpos]);
                 copyFromRegion(rsVals, cells, rs_);
                 copyFromRegion(rvVals, cells, rv_);
             }

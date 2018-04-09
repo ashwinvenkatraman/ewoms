@@ -35,6 +35,8 @@
 #include <dune/istl/paamg/pinfo.hh>
 #include <dune/istl/owneroverlapcopy.hh>
 
+#include <dune/common/version.hh>
+
 #include <iostream>
 
 namespace Ewoms {
@@ -94,8 +96,12 @@ class ParallelAmgBackend : public ParallelBaseBackend<TypeTag>
     typedef Dune::SeqSOR<Matrix, Vector, Vector> SequentialSmoother;
 // typedef Dune::SeqSSOR<Matrix,Vector,Vector> SequentialSmoother;
 // typedef Dune::SeqJac<Matrix,Vector,Vector> SequentialSmoother;
+#if DUNE_VERSION_NEWER(DUNE_ISTL, 2,7)
+// typedef Dune::SeqILU<Matrix,Vector,Vector> SequentialSmoother;
+#else
 // typedef Dune::SeqILU0<Matrix,Vector,Vector> SequentialSmoother;
 // typedef Dune::SeqILUn<Matrix,Vector,Vector> SequentialSmoother;
+#endif
 
 #if HAVE_MPI
     typedef Dune::OwnerOverlapCopyCommunication<Ewoms::Linear::Index>
@@ -240,7 +246,7 @@ protected:
             amg_.reset();
 
         int verbosity = 0;
-        if (this->simulator_.gridManager().gridView().comm().rank() == 0)
+        if (this->simulator_.vanguard().gridView().comm().rank() == 0)
             verbosity = EWOMS_GET_PARAM(TypeTag, int, LinearSolverVerbosity);
 
         typedef typename Dune::Amg::SmootherTraits<ParallelSmoother>::Arguments SmootherArgs;

@@ -34,8 +34,8 @@
 #include <opm/material/fluidmatrixinteractions/ThreePhaseParkerVanGenuchten.hpp>
 #include <opm/material/fluidmatrixinteractions/MaterialTraits.hpp>
 #include <opm/material/constraintsolvers/ComputeFromReferencePhase.hpp>
-#include <opm/common/Valgrind.hpp>
-#include <opm/common/Unused.hpp>
+#include <opm/material/common/Valgrind.hpp>
+#include <opm/material/common/Unused.hpp>
 
 #include <dune/grid/yaspgrid.hh>
 #include <dune/grid/io/file/dgfparser/dgfyasp.hh>
@@ -449,7 +449,7 @@ private:
         typedef Opm::ComputeFromReferencePhase<Scalar, FluidSystem> CFRP;
         typename FluidSystem::template ParameterCache<Scalar> paramCache;
         CFRP::solve(fs, paramCache, gasPhaseIdx,
-                    /*setViscosity=*/false,
+                    /*setViscosity=*/true,
                     /*setEnthalpy=*/false);
 
         fs.setMoleFraction(waterPhaseIdx, H2OIdx,

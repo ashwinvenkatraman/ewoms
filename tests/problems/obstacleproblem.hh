@@ -39,7 +39,7 @@
 #include <opm/material/fluidmatrixinteractions/MaterialTraits.hpp>
 #include <opm/material/thermal/ConstantSolidHeatCapLaw.hpp>
 #include <opm/material/thermal/SomertonThermalConductionLaw.hpp>
-#include <opm/common/Unused.hpp>
+#include <opm/material/common/Unused.hpp>
 
 #include <dune/grid/yaspgrid.hh>
 #include <dune/grid/io/file/dgfparser/dgfyasp.hh>
@@ -528,12 +528,11 @@ private:
 
         // make the fluid state consistent with local thermodynamic
         // equilibrium
-        typedef Opm::ComputeFromReferencePhase<Scalar, FluidSystem>
-        ComputeFromReferencePhase;
+        typedef Opm::ComputeFromReferencePhase<Scalar, FluidSystem> ComputeFromReferencePhase;
 
         typename FluidSystem::template ParameterCache<Scalar> paramCache;
         ComputeFromReferencePhase::solve(fs, paramCache, refPhaseIdx,
-                                         /*setViscosity=*/false,
+                                         /*setViscosity=*/true,
                                          /*setEnthalpy=*/false);
     }
 

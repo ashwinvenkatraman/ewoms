@@ -28,7 +28,6 @@
 #ifndef EWOMS_ECL_TRANSMISSIBILITY_HH
 #define EWOMS_ECL_TRANSMISSIBILITY_HH
 
-
 #include <ewoms/common/propertysystem.hh>
 
 #include <opm/parser/eclipse/EclipseState/EclipseState.hpp>
@@ -36,10 +35,10 @@
 #include <opm/parser/eclipse/EclipseState/Grid/FaceDir.hpp>
 #include <opm/parser/eclipse/EclipseState/Grid/TransMult.hpp>
 
-#include <dune/grid/CpGrid.hpp>
+#include <opm/grid/CpGrid.hpp>
 
-#include <opm/common/ErrorMacros.hpp>
-#include <opm/common/Exceptions.hpp>
+#include <opm/material/common/Exceptions.hpp>
+#include <opm/material/common/ConditionalStorage.hpp>
 
 #include <dune/grid/common/mcmgmapper.hh>
 
@@ -54,10 +53,11 @@
 namespace Ewoms {
 namespace Properties {
 NEW_PROP_TAG(Scalar);
-NEW_PROP_TAG(GridManager);
+NEW_PROP_TAG(Vanguard);
 NEW_PROP_TAG(Grid);
 NEW_PROP_TAG(GridView);
 NEW_PROP_TAG(ElementMapper);
+NEW_PROP_TAG(EnableEnergy);
 }
 
 /*!
@@ -72,9 +72,11 @@ class EclTransmissibility
     typedef typename GET_PROP_TYPE(TypeTag, Grid) Grid;
     typedef typename GET_PROP_TYPE(TypeTag, GridView) GridView;
     typedef typename GET_PROP_TYPE(TypeTag, Scalar) Scalar;
-    typedef typename GET_PROP_TYPE(TypeTag, GridManager) GridManager;
+    typedef typename GET_PROP_TYPE(TypeTag, Vanguard) Vanguard;
     typedef typename GET_PROP_TYPE(TypeTag, ElementMapper) ElementMapper;
     typedef typename GridView::Intersection Intersection;
+
+    static const bool enableEnergy = GET_PROP_VALUE(TypeTag, EnableEnergy);
 
     // Grid and world dimension
     enum { dimWorld = GridView::dimensionworld };
@@ -83,8 +85,8 @@ class EclTransmissibility
     typedef Dune::FieldVector<Scalar, dimWorld> DimVector;
 
 public:
-    EclTransmissibility(const GridManager& gridManager)
-        : gridManager_(gridManager)
+    EclTransmissibility(const Vanguard& vanguard)
+        : vanguard_(vanguard)
     {}
 
     /*!
@@ -105,11 +107,16 @@ public:
     { update(); }
 
 
+    /*!
+     * \brief Compute all transmissibilities
+     *
+     * Also, this updates the "thermal half transmissibilities" if energy is enabled.
+     */
     void update()
     {
-        const auto& gridView = gridManager_.gridView();
-        const auto& cartMapper = gridManager_.cartesianIndexMapper();
-        const auto& eclState = gridManager_.eclState();
+        const auto& gridView = vanguard_.gridView();
+        const auto& cartMapper = vanguard_.cartesianIndexMapper();
+        const auto& eclState = vanguard_.eclState();
         const auto& eclGrid = eclState.getInputGrid();
         auto& transMult = eclState.getTransMult();
 #if DUNE_VERSION_NEWER(DUNE_GRID, 2,6)
@@ -155,33 +162,100 @@ public:
         trans_.clear();
         trans_.reserve(numElements*3*1.05);
 
+        transBoundary_.clear();
+
+        // if energy is enabled, let's do the same for the "thermal half transmissibilities"
+        if (enableEnergy) {
+            thermalHalfTrans_->clear();
+            thermalHalfTrans_->reserve(numElements*6*1.05);
+
+            thermalHalfTransBoundary_.clear();
+        }
+
         // compute the transmissibilities for all intersections
         elemIt = gridView.template begin</*codim=*/ 0>();
         for (; elemIt != elemEndIt; ++elemIt) {
             const auto& elem = *elemIt;
+            unsigned elemIdx = elemMapper.index(elem);
+
             auto isIt = gridView.ibegin(elem);
             const auto& isEndIt = gridView.iend(elem);
+            unsigned boundaryIsIdx = 0;
             for (; isIt != isEndIt; ++ isIt) {
                 // store intersection, this might be costly
                 const auto& intersection = *isIt;
 
-                // ignore boundary intersections for now (TODO?)
+                // deal with grid boundaries
+                if (intersection.boundary()) {
+                    // compute the transmissibilty for the boundary intersection
+                    const auto& geometry = intersection.geometry();
+                    const auto& faceCenterInside = geometry.center();
 
-                // continue if no neighbor is present
-                if ( ! intersection.neighbor() )
+                    auto faceAreaNormal = intersection.centerUnitOuterNormal();
+                    faceAreaNormal *= geometry.volume();
+
+                    Scalar transBoundaryIs;
+                    computeHalfTrans_(transBoundaryIs,
+                                      faceAreaNormal,
+                                      intersection.indexInInside(),
+                                      distanceVector_(faceCenterInside,
+                                                      intersection.indexInInside(),
+                                                      elemIdx,
+                                                      axisCentroids),
+                                      permeability_[elemIdx]);
+
+                    // normally there would be two half-transmissibilities that would be
+                    // averaged. on the grid boundary there only is the half
+                    // transmissibility of the interior element.
+                    transBoundary_[std::make_pair(elemIdx, boundaryIsIdx)] = transBoundaryIs;
+
+                    // for boundary intersections we also need to compute the thermal
+                    // half transmissibilities
+                    if (enableEnergy) {
+                        const auto& n = intersection.centerUnitOuterNormal();
+                        const auto& inPos = elem.geometry().center();
+                        const auto& outPos = intersection.geometry().center();
+                        const auto& d = outPos - inPos;
+
+                        // eWoms expects fluxes to be area specific, i.e. we must *not*
+                        // the transmissibility with the face area here
+                        Scalar thermalHalfTrans = std::abs(n*d)/(d*d);
+
+                        thermalHalfTransBoundary_[std::make_pair(elemIdx, boundaryIsIdx)] =
+                            thermalHalfTrans;
+                    }
+
+                    ++ boundaryIsIdx;
+                    continue;
+                }
+
+                if (!intersection.neighbor())
+                    // elements can be on process boundaries, i.e. they are not on the
+                    // domain boundary yet they don't have neighbors.
                     continue;
 
-                const auto& inside = intersection.inside();
-                const auto& outside = intersection.outside();
-                unsigned insideElemIdx = elemMapper.index(inside);
-                unsigned outsideElemIdx = elemMapper.index(outside);
+                const auto& outsideElem = intersection.outside();
+                unsigned outsideElemIdx = elemMapper.index(outsideElem);
+
+                // update the "thermal half transmissibility" for the intersection
+                if (enableEnergy) {
+                    const auto& n = intersection.centerUnitOuterNormal();
+                    Scalar A = intersection.geometry().volume();
+
+                    const auto& inPos = elem.geometry().center();
+                    const auto& outPos = intersection.geometry().center();
+                    const auto& d = outPos - inPos;
+
+                    (*thermalHalfTrans_)[directionalIsId_(elemIdx, outsideElemIdx)] =
+                        A * (n*d)/(d*d);
+                }
 
                 // we only need to calculate a face's transmissibility
                 // once...
-                if (insideElemIdx > outsideElemIdx)
+                if (elemIdx > outsideElemIdx)
                     continue;
 
-                unsigned insideCartElemIdx = cartMapper.cartesianIndex(insideElemIdx);
+                unsigned insideCartElemIdx = cartMapper.cartesianIndex(elemIdx);
                 unsigned outsideCartElemIdx = cartMapper.cartesianIndex(outsideElemIdx);
 
                 // local indices of the faces of the inside and
@@ -193,10 +267,16 @@ public:
                 DimVector faceCenterOutside;
                 DimVector faceAreaNormal;
 
-                typename std::is_same< Grid, Dune::CpGrid> :: type isCpGrid;
-                computeFaceProperties( intersection, insideElemIdx, insideFaceIdx, outsideElemIdx, outsideFaceIdx,
-                                       faceCenterInside, faceCenterOutside, faceAreaNormal,
-                                       isCpGrid );
+                typename std::is_same<Grid, Dune::CpGrid>::type isCpGrid;
+                computeFaceProperties(intersection,
+                                      elemIdx,
+                                      insideFaceIdx,
+                                      outsideElemIdx,
+                                      outsideFaceIdx,
+                                      faceCenterInside,
+                                      faceCenterOutside,
+                                      faceAreaNormal,
+                                      isCpGrid);
 
                 Scalar halfTrans1;
                 Scalar halfTrans2;
@@ -206,9 +286,9 @@ public:
                                   insideFaceIdx,
                                   distanceVector_(faceCenterInside,
                                                   intersection.indexInInside(),
-                                                  insideElemIdx,
+                                                  elemIdx,
                                                   axisCentroids),
-                                  permeability_[insideElemIdx]);
+                                  permeability_[elemIdx]);
                 computeHalfTrans_(halfTrans2,
                                   faceAreaNormal,
                                   outsideFaceIdx,
@@ -255,23 +335,55 @@ public:
                     break;
 
                 default:
-                    OPM_THROW(std::logic_error, "Could not determine a face direction");
+                    throw std::logic_error("Could not determine a face direction");
                 }
 
                 trans *= transMult.getRegionMultiplier(insideCartElemIdx,
                                                        outsideCartElemIdx,
                                                        faceDir);
 
-                trans_[isId_(insideElemIdx, outsideElemIdx)] = trans;
+                trans_[isId_(elemIdx, outsideElemIdx)] = trans;
             }
         }
     }
 
+    /*!
+     * \brief Return the permeability for an element.
+     */
     const DimMatrix& permeability(unsigned elemIdx) const
     { return permeability_[elemIdx]; }
 
+    /*!
+     * \brief Return the transmissibility for the intersection between two elements.
+     */
     Scalar transmissibility(unsigned elemIdx1, unsigned elemIdx2) const
     { return trans_.at(isId_(elemIdx1, elemIdx2)); }
+
+    /*!
+     * \brief Return the transmissibility for a given boundary segment.
+     */
+    Scalar transmissibilityBoundary(unsigned elemIdx, unsigned boundaryFaceIdx) const
+    { return transBoundary_.at(std::make_pair(elemIdx, boundaryFaceIdx)); }
+
+    /*!
+     * \brief Return the thermal "half transmissibility" for the intersection between two
+     *        elements.
+     *
+     * The "half transmissibility" features all sub-expressions of the "thermal
+     * transmissibility" which can be precomputed, i.e. they are not dependent on the
+     * current solution:
+     *
+     * H_t = A * (n*d)/(d*d);
+     *
+     * where A is the area of the intersection between the inside and outside elements, n
+     * is the outer unit normal, and d is the distance between the center of the inside
+     * cell and the center of the intersection.
+     */
+    Scalar thermalHalfTrans(unsigned insideElemIdx, unsigned outsideElemIdx) const
+    { return thermalHalfTrans_->at(directionalIsId_(insideElemIdx, outsideElemIdx)); }
+
+    Scalar thermalHalfTransBoundary(unsigned insideElemIdx, unsigned boundaryFaceIdx) const
+    { return thermalHalfTransBoundary_.at(std::make_pair(insideElemIdx, boundaryFaceIdx)); }
 
 private:
     template <class Intersection>
@@ -283,7 +395,7 @@ private:
                                 DimVector& faceCenterInside,
                                 DimVector& faceCenterOutside,
                                 DimVector& faceAreaNormal,
-                                std::false_type ) const
+                                /*isCpGrid=*/std::false_type) const
     {
         // default implementation for DUNE grids
         const auto& geometry = intersection.geometry();
@@ -303,19 +415,19 @@ private:
                                 DimVector& faceCenterInside,
                                 DimVector& faceCenterOutside,
                                 DimVector& faceAreaNormal,
-                                std::true_type ) const
+                                /*isCpGrid=*/std::true_type) const
     {
         int faceIdx = intersection.id();
-        faceCenterInside = gridManager_.grid().faceCenterEcl(insideElemIdx,insideFaceIdx);
-        faceCenterOutside = gridManager_.grid().faceCenterEcl(outsideElemIdx,outsideFaceIdx);
-        faceAreaNormal = gridManager_.grid().faceAreaNormalEcl(faceIdx);
+        faceCenterInside = vanguard_.grid().faceCenterEcl(insideElemIdx,insideFaceIdx);
+        faceCenterOutside = vanguard_.grid().faceCenterEcl(outsideElemIdx,outsideFaceIdx);
+        faceAreaNormal = vanguard_.grid().faceAreaNormalEcl(faceIdx);
     }
 
     void extractPermeability_()
     {
-        const auto& props = gridManager_.eclState().get3DProperties();
+        const auto& props = vanguard_.eclState().get3DProperties();
 
-        unsigned numElem = gridManager_.gridView().size(/*codim=*/0);
+        unsigned numElem = vanguard_.gridView().size(/*codim=*/0);
         permeability_.resize(numElem);
 
         // read the intrinsic permeabilities from the eclState. Note that all arrays
@@ -333,7 +445,7 @@ private:
                 permzData = props.getDoubleGridProperty("PERMZ").getData();
 
             for (size_t dofIdx = 0; dofIdx < numElem; ++ dofIdx) {
-                unsigned cartesianElemIdx = gridManager_.cartesianIndex(dofIdx);
+                unsigned cartesianElemIdx = vanguard_.cartesianIndex(dofIdx);
                 permeability_[dofIdx] = 0.0;
                 permeability_[dofIdx][0][0] = permxData[cartesianElemIdx];
                 permeability_[dofIdx][1][1] = permyData[cartesianElemIdx];
@@ -343,9 +455,8 @@ private:
             // for now we don't care about non-diagonal entries
         }
         else
-            OPM_THROW(std::logic_error,
-                      "Can't read the intrinsic permeability from the ecl state. "
-                      "(The PERM{X,Y,Z} keywords are missing)");
+            throw std::logic_error("Can't read the intrinsic permeability from the ecl state. "
+                                   "(The PERM{X,Y,Z} keywords are missing)");
     }
 
     std::uint64_t isId_(unsigned elemIdx1, unsigned elemIdx2) const
@@ -356,6 +467,13 @@ private:
         std::uint64_t elemBIdx = std::max(elemIdx1, elemIdx2);
 
         return (elemBIdx<<elemIdxShift) + elemAIdx;
+    }
+
+    std::uint64_t directionalIsId_(unsigned elemIdx1, unsigned elemIdx2) const
+    {
+        static const unsigned elemIdxShift = 32; // bits
+
+        return (std::uint64_t(elemIdx1)<<elemIdxShift) + elemIdx2;
     }
 
     void computeHalfTrans_(Scalar& halfTrans,
@@ -448,14 +566,14 @@ private:
 
         // compute volume weighted arithmetic average of NTG for
         // cells merged as an result of minpv.
-        const auto& eclState = gridManager_.eclState();
+        const auto& eclState = vanguard_.eclState();
         const auto& eclGrid = eclState.getInputGrid();
         const auto& porv = eclState.get3DProperties().getDoubleGridProperty("PORV").getData();
         const auto& actnum = eclState.get3DProperties().getIntGridProperty("ACTNUM").getData();
         const std::vector<double>& ntg =
             eclState.get3DProperties().getDoubleGridProperty("NTG").getData();
 
-        const auto& cartMapper = gridManager_.cartesianIndexMapper();
+        const auto& cartMapper = vanguard_.cartesianIndexMapper();
         const auto& cartDims = cartMapper.cartesianDimensions();
         assert(dimWorld > 1);
         const size_t nxny = cartDims[0] * cartDims[1];
@@ -486,15 +604,15 @@ private:
             }
             averageNtg[cartesianCellIdx] = ntgCellVolume / totalCellVolume;
         }
-
     }
 
-
-
-
-    const GridManager& gridManager_;
+    const Vanguard& vanguard_;
     std::vector<DimMatrix> permeability_;
     std::unordered_map<std::uint64_t, Scalar> trans_;
+    std::map<std::pair<unsigned, unsigned>, Scalar> transBoundary_;
+    std::map<std::pair<unsigned, unsigned>, Scalar> thermalHalfTransBoundary_;
+    Opm::ConditionalStorage<enableEnergy,
+                            std::unordered_map<std::uint64_t, Scalar> > thermalHalfTrans_;
 };
 
 } // namespace Ewoms

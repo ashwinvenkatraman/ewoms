@@ -31,7 +31,7 @@
 
 #include <opm/material/fluidstates/CompositionalFluidState.hpp>
 #include <opm/material/fluidsystems/H2ON2LiquidPhaseFluidSystem.hpp>
-#include <opm/common/Unused.hpp>
+#include <opm/material/common/Unused.hpp>
 
 #include <dune/grid/yaspgrid.hh>
 #include <dune/grid/io/file/dgfparser/dgfyasp.hh>
@@ -121,6 +121,8 @@ class OutflowProblem : public GET_PROP_TYPE(TypeTag, BaseProblem)
         // Grid and world dimension
         dim = GridView::dimension,
         dimWorld = GridView::dimensionworld,
+
+        numPhases = FluidSystem::numPhases,
 
         // component indices
         H2OIdx = FluidSystem::H2OIdx,
@@ -267,6 +269,13 @@ public:
             fs.setMoleFraction(/*phaseIdx=*/0, N2Idx, xlN2);
             fs.setMoleFraction(/*phaseIdx=*/0, H2OIdx, 1 - xlN2);
 
+            typename FluidSystem::template ParameterCache<Scalar> paramCache;
+            paramCache.updateAll(fs);
+            for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++ phaseIdx) {
+                fs.setDensity(phaseIdx, FluidSystem::density(fs, paramCache, phaseIdx));
+                fs.setViscosity(phaseIdx, FluidSystem::viscosity(fs, paramCache, phaseIdx));
+            }
+
             // impose an freeflow boundary condition
             values.setFreeFlow(context, spaceIdx, timeIdx, fs);
         }
@@ -343,6 +352,13 @@ private:
         fs.setMoleFraction(/*phaseIdx=*/0, H2OIdx, 1.0);
         fs.setMoleFraction(/*phaseIdx=*/0, N2Idx, 0);
         fs.setTemperature(T);
+
+        typename FluidSystem::template ParameterCache<Scalar> paramCache;
+        paramCache.updateAll(fs);
+        for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++ phaseIdx) {
+            fs.setDensity(phaseIdx, FluidSystem::density(fs, paramCache, phaseIdx));
+            fs.setViscosity(phaseIdx, FluidSystem::viscosity(fs, paramCache, phaseIdx));
+        }
     }
 
     const Scalar eps_;

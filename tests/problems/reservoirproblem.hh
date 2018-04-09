@@ -38,7 +38,7 @@
 #include <opm/material/fluidsystems/blackoilpvt/DryGasPvt.hpp>
 #include <opm/material/fluidsystems/blackoilpvt/LiveOilPvt.hpp>
 #include <opm/material/fluidsystems/blackoilpvt/ConstantCompressibilityWaterPvt.hpp>
-#include <opm/common/Unused.hpp>
+#include <opm/material/common/Unused.hpp>
 
 #include <dune/grid/yaspgrid.hh>
 #include <dune/grid/io/file/dgfparser/dgfyasp.hh>
@@ -663,7 +663,7 @@ private:
         CFRP::solve(injFs,
                     paramCache,
                     /*refPhaseIdx=*/waterPhaseIdx,
-                    /*setViscosities=*/false,
+                    /*setViscosities=*/true,
                     /*setEnthalpies=*/false);
 
         // set up the fluid state used for the producer
@@ -681,7 +681,7 @@ private:
         CFRP::solve(prodFs,
                     paramCache,
                     /*refPhaseIdx=*/oilPhaseIdx,
-                    /*setViscosities=*/false,
+                    /*setViscosities=*/true,
                     /*setEnthalpies=*/false);
     }
 

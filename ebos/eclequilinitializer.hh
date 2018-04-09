@@ -44,6 +44,7 @@ NEW_PROP_TAG(FluidSystem);
 NEW_PROP_TAG(GridView);
 NEW_PROP_TAG(Scalar);
 NEW_PROP_TAG(MaterialLaw);
+NEW_PROP_TAG(EnableEnergy);
 }
 
 /*!
@@ -65,10 +66,6 @@ class EclEquilInitializer
     typedef typename GET_PROP_TYPE(TypeTag, Scalar) Scalar;
     typedef typename GET_PROP_TYPE(TypeTag, MaterialLaw) MaterialLaw;
 
-    typedef Opm::BlackOilFluidState<Scalar,
-    FluidSystem,
-    /*enableTemperature=*/true> ScalarFluidState;
-
     enum { numPhases = FluidSystem::numPhases };
     enum { oilPhaseIdx = FluidSystem::oilPhaseIdx };
     enum { gasPhaseIdx = FluidSystem::gasPhaseIdx };
@@ -80,6 +77,15 @@ class EclEquilInitializer
     enum { waterCompIdx = FluidSystem::waterCompIdx };
 
     enum { dimWorld = GridView::dimensionworld };
+    enum { enableTemperature = GET_PROP_VALUE(TypeTag, EnableTemperature) };
+    enum { enableEnergy = GET_PROP_VALUE(TypeTag, EnableEnergy) };
+
+    // NB: setting the enableEnergy argument to true enables storage of enthalpy and
+    // internal energy!
+    typedef Opm::BlackOilFluidState<Scalar,
+                                    FluidSystem,
+                                    enableTemperature,
+                                    enableEnergy> ScalarFluidState;
 
 public:
     template <class EclMaterialLawManager>
@@ -87,21 +93,22 @@ public:
                         EclMaterialLawManager& materialLawManager)
         : simulator_(simulator)
     {
-        const auto& gridManager = simulator.gridManager();
+        const auto& vanguard = simulator.vanguard();
+        const auto& eclState = vanguard.eclState();
 
-        unsigned numElems = gridManager.grid().size(0);
-        unsigned numCartesianElems = gridManager.cartesianSize();
+        unsigned numElems = vanguard.grid().size(0);
+        unsigned numCartesianElems = vanguard.cartesianSize();
         typedef typename GET_PROP_TYPE(TypeTag, FluidSystem) FluidSystem;
 
         EQUIL::DeckDependent::InitialStateComputer<TypeTag> initialState(materialLawManager,
-                                                                         gridManager.eclState(),
-                                                                         gridManager.grid(),
+                                                                         eclState,
+                                                                         vanguard.grid(),
                                                                          simulator.problem().gravity()[dimWorld - 1]);
 
         // copy the result into the array of initial fluid states
         initialFluidStates_.resize(numCartesianElems);
         for (unsigned int elemIdx = 0; elemIdx < numElems; ++elemIdx) {
-            unsigned cartesianElemIdx = gridManager.cartesianIndex(elemIdx);
+            unsigned cartesianElemIdx = vanguard.cartesianIndex(elemIdx);
             auto& fluidState = initialFluidStates_[cartesianElemIdx];
 
             // get the PVT region index of the current element
@@ -127,15 +134,13 @@ public:
                 fluidState.setRv(0.0);
 
 
-            // set the temperature
-            // TODO Get the temperature from the initialState
-            Scalar T = FluidSystem::surfaceTemperature;
-            fluidState.setTemperature(T);
+            // set the temperature.
+            if (enableTemperature || enableEnergy)
+                fluidState.setTemperature(initialState.temperature()[elemIdx]);
 
             // set the phase pressures.
             for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++phaseIdx)
                 fluidState.setPressure(phaseIdx, initialState.press()[phaseIdx][elemIdx]);
-
         }
     }
 
@@ -147,9 +152,9 @@ public:
      */
     const ScalarFluidState& initialFluidState(unsigned elemIdx) const
     {
-        const auto& gridManager = simulator_.gridManager();
+        const auto& vanguard = simulator_.vanguard();
 
-        unsigned cartesianElemIdx = gridManager.cartesianIndex(elemIdx);
+        unsigned cartesianElemIdx = vanguard.cartesianIndex(elemIdx);
         return initialFluidStates_[cartesianElemIdx];
     }
 

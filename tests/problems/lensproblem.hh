@@ -28,7 +28,7 @@
 #ifndef EWOMS_LENS_PROBLEM_HH
 #define EWOMS_LENS_PROBLEM_HH
 
-#include <ewoms/io/structuredgridmanager.hh>
+#include <ewoms/io/structuredgridvanguard.hh>
 #include <ewoms/models/immiscible/immiscibleproperties.hh>
 #include <ewoms/disc/common/fvbaseadlocallinearizer.hh>
 
@@ -40,7 +40,7 @@
 #include <opm/material/fluidstates/ImmiscibleFluidState.hpp>
 #include <opm/material/components/SimpleH2O.hpp>
 #include <opm/material/components/Dnapl.hpp>
-#include <opm/common/Unused.hpp>
+#include <opm/material/common/Unused.hpp>
 
 #include <dune/common/version.hh>
 #include <dune/common/fvector.hh>
@@ -55,7 +55,7 @@ template <class TypeTag>
 class LensProblem;
 
 namespace Properties {
-NEW_TYPE_TAG(LensBaseProblem, INHERITS_FROM(StructuredGridManager));
+NEW_TYPE_TAG(LensBaseProblem, INHERITS_FROM(StructuredGridVanguard));
 
 // declare the properties specific for the lens problem
 NEW_PROP_TAG(LensLowerLeftX);
@@ -426,9 +426,9 @@ public:
         const GlobalPosition& pos = context.pos(spaceIdx, timeIdx);
 
         if (onLeftBoundary_(pos) || onRightBoundary_(pos)) {
-            // free flow boundary
-            Scalar densityW = WettingPhase::density(temperature_,
-                                                     /*pressure=*/Scalar(1e5));
+            // free flow boundary. we assume incompressible fluids
+            Scalar densityW = WettingPhase::density(temperature_, /*pressure=*/Scalar(1e5));
+            Scalar densityN = NonwettingPhase::density(temperature_, /*pressure=*/Scalar(1e5));
 
             Scalar T = temperature(context, spaceIdx, timeIdx);
             Scalar pw, Sw;
@@ -464,6 +464,12 @@ public:
             MaterialLaw::capillaryPressures(pC, matParams, fs);
             fs.setPressure(wettingPhaseIdx, pw);
             fs.setPressure(nonWettingPhaseIdx, pw + pC[nonWettingPhaseIdx] - pC[wettingPhaseIdx]);
+
+            fs.setDensity(wettingPhaseIdx, densityW);
+            fs.setDensity(nonWettingPhaseIdx, densityN);
+
+            fs.setViscosity(wettingPhaseIdx, WettingPhase::viscosity(temperature_, fs.pressure(wettingPhaseIdx)));
+            fs.setViscosity(nonWettingPhaseIdx, NonwettingPhase::viscosity(temperature_, fs.pressure(nonWettingPhaseIdx)));
 
             // impose an freeflow boundary condition
             values.setFreeFlow(context, spaceIdx, timeIdx, fs);

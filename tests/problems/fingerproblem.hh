@@ -28,7 +28,7 @@
 #ifndef EWOMS_FINGER_PROBLEM_HH
 #define EWOMS_FINGER_PROBLEM_HH
 
-#include <ewoms/io/structuredgridmanager.hh>
+#include <ewoms/io/structuredgridvanguard.hh>
 
 #include <opm/material/fluidmatrixinteractions/RegularizedVanGenuchten.hpp>
 #include <opm/material/fluidmatrixinteractions/LinearMaterial.hpp>
@@ -61,7 +61,7 @@ template <class TypeTag>
 class FingerProblem;
 
 namespace Properties {
-NEW_TYPE_TAG(FingerBaseProblem, INHERITS_FROM(StructuredGridManager));
+NEW_TYPE_TAG(FingerBaseProblem, INHERITS_FROM(StructuredGridVanguard));
 
 #if HAVE_DUNE_ALUGRID
 // use dune-alugrid if available
@@ -177,6 +177,7 @@ class FingerProblem : public GET_PROP_TYPE(TypeTag, BaseProblem)
 
     enum {
         // number of phases
+        numPhases = FluidSystem::numPhases,
 
         // phase indices
         wettingPhaseIdx = FluidSystem::wettingPhaseIdx,
@@ -218,7 +219,7 @@ public:
      */
     FingerProblem(Simulator& simulator)
         : ParentType(simulator),
-          materialParams_( simulator.gridManager().grid(), codim )
+          materialParams_( simulator.vanguard().grid(), codim )
     {
     }
 
@@ -520,6 +521,14 @@ private:
         Scalar pn = 1e5;
         fs.setPressure(nonWettingPhaseIdx, pn);
         fs.setPressure(wettingPhaseIdx, pn);
+
+        typename FluidSystem::template ParameterCache<Scalar> paramCache;
+        paramCache.updateAll(fs);
+        for (unsigned phaseIdx = 0; phaseIdx < numPhases; ++ phaseIdx) {
+            fs.setDensity(phaseIdx, FluidSystem::density(fs, paramCache, phaseIdx));
+            fs.setViscosity(phaseIdx, FluidSystem::viscosity(fs, paramCache, phaseIdx));
+        }
+
     }
 
     DimMatrix K_;

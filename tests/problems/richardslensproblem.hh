@@ -36,7 +36,7 @@
 #include <opm/material/fluidmatrixinteractions/LinearMaterial.hpp>
 #include <opm/material/fluidmatrixinteractions/EffToAbsLaw.hpp>
 #include <opm/material/fluidmatrixinteractions/MaterialTraits.hpp>
-#include <opm/common/Unused.hpp>
+#include <opm/material/common/Unused.hpp>
 
 #include <dune/grid/yaspgrid.hh>
 #include <dune/grid/io/file/dgfparser/dgfyasp.hh>
@@ -367,6 +367,14 @@ public:
             MaterialLaw::capillaryPressures(pC, materialParams, fs);
             fs.setPressure(wettingPhaseIdx, pnRef_ + pC[wettingPhaseIdx] - pC[nonWettingPhaseIdx]);
             fs.setPressure(nonWettingPhaseIdx, pnRef_);
+
+            typename FluidSystem::template ParameterCache<Scalar> paramCache;
+            paramCache.updateAll(fs);
+            fs.setDensity(wettingPhaseIdx, FluidSystem::density(fs, paramCache, wettingPhaseIdx));
+            //fs.setDensity(nonWettingPhaseIdx, FluidSystem::density(fs, paramCache, nonWettingPhaseIdx));
+
+            fs.setViscosity(wettingPhaseIdx, FluidSystem::viscosity(fs, paramCache, wettingPhaseIdx));
+            //fs.setViscosity(nonWettingPhaseIdx, FluidSystem::viscosity(fs, paramCache, nonWettingPhaseIdx));
 
             values.setFreeFlow(context, spaceIdx, timeIdx, fs);
         }

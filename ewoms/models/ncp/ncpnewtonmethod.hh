@@ -30,9 +30,8 @@
 
 #include "ncpproperties.hh"
 
-#include <opm/common/Unused.hpp>
-#include <opm/common/ErrorMacros.hpp>
-#include <opm/common/Exceptions.hpp>
+#include <opm/material/common/Unused.hpp>
+#include <opm/material/common/Exceptions.hpp>
 
 #include <algorithm>
 
@@ -69,9 +68,7 @@ public:
      * \copydoc FvBaseNewtonMethod::FvBaseNewtonMethod(Problem& )
      */
     NcpNewtonMethod(Simulator& simulator) : ParentType(simulator)
-    {
-        Dune::FMatrixPrecision<Scalar>::set_singular_limit(1e-35);
-    }
+    {}
 
 protected:
     friend ParentType;
@@ -113,10 +110,9 @@ protected:
         // make sure that the error never grows beyond the maximum
         // allowed one
         if (this->error_ > EWOMS_GET_PARAM(TypeTag, Scalar, NewtonMaxError))
-            OPM_THROW(Opm::NumericalProblem,
-                      "Newton: Error " << this->error_
-                      << " is larger than maximum allowed error of "
-                      << EWOMS_GET_PARAM(TypeTag, Scalar, NewtonMaxError));
+            throw Opm::NumericalIssue("Newton: Error "+std::to_string(double(this->error_))+
+                                        +" is larger than maximum allowed error of "
+                                        +std::to_string(double(EWOMS_GET_PARAM(TypeTag, Scalar, NewtonMaxError))));
     }
 
     /*!

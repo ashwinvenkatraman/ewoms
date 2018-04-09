@@ -30,8 +30,8 @@
 
 #include "fvbaseproperties.hh"
 
-#include <opm/common/Valgrind.hpp>
-#include <opm/common/Unused.hpp>
+#include <opm/material/common/Valgrind.hpp>
+#include <opm/material/common/Unused.hpp>
 
 namespace Ewoms {
 /*!
@@ -90,8 +90,7 @@ public:
     void updateBoundary(const Context& context,
                         unsigned bfIdx,
                         unsigned timeIdx,
-                        const FluidState& fluidState OPM_UNUSED,
-                        typename FluidSystem::template ParameterCache<typename FluidState::Scalar>& paramCache OPM_UNUSED)
+                        const FluidState& fluidState OPM_UNUSED)
     {
         unsigned dofIdx = context.interiorScvIndex(bfIdx, timeIdx);
         interiorScvIdx_ = static_cast<unsigned short>(dofIdx);

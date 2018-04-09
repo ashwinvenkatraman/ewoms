@@ -50,9 +50,8 @@
 #include <ewoms/io/vtkblackoilmodule.hh>
 
 #include <opm/material/fluidsystems/BlackOilFluidSystem.hpp>
-#include <opm/common/Unused.hpp>
-#include <opm/common/ErrorMacros.hpp>
-#include <opm/common/Exceptions.hpp>
+#include <opm/material/common/Unused.hpp>
+#include <opm/material/common/Exceptions.hpp>
 
 #include <sstream>
 #include <string>
@@ -62,7 +61,7 @@ template <class TypeTag>
 class BlackOilModel;
 
 template <class TypeTag>
-class EclGridManager;
+class EclVanguard;
 }
 
 namespace Ewoms {
@@ -72,6 +71,7 @@ NEW_TYPE_TAG(BlackOilModel, INHERITS_FROM(MultiPhaseBaseModel,
                                           VtkBlackOil,
                                           VtkBlackOilSolvent,
                                           VtkBlackOilPolymer,
+                                          VtkBlackOilEnergy,
                                           VtkComposition));
 
 //! Set the local residual function
@@ -108,7 +108,10 @@ SET_TYPE_PROP(BlackOilModel, FluxModule, Ewoms::BlackOilDarcyFluxModule<TypeTag>
 
 //! The indices required by the model
 SET_TYPE_PROP(BlackOilModel, Indices,
-              Ewoms::BlackOilIndices<GET_PROP_VALUE(TypeTag, EnableSolvent)?1:0, GET_PROP_VALUE(TypeTag, EnablePolymer)?1:0, /*PVOffset=*/0>);
+              Ewoms::BlackOilIndices<GET_PROP_VALUE(TypeTag, EnableSolvent),
+                                     GET_PROP_VALUE(TypeTag, EnablePolymer),
+                                     GET_PROP_VALUE(TypeTag, EnableEnergy),
+                                     /*PVOffset=*/0>);
 
 //! Set the fluid system to the black-oil fluid system by default
 SET_PROP(BlackOilModel, FluidSystem)
@@ -121,10 +124,32 @@ public:
     typedef Opm::FluidSystems::BlackOil<Scalar> type;
 };
 
-// by default, the ECL solvent module is disabled
+// by default, all ECL extension modules are disabled
 SET_BOOL_PROP(BlackOilModel, EnableSolvent, false);
 SET_BOOL_PROP(BlackOilModel, EnablePolymer, false);
-// by default, ebos formulates the conservation equations in terms of mass not surface volumes
+
+//! By default, the blackoil model is isothermal and does not conserve energy
+SET_BOOL_PROP(BlackOilModel, EnableTemperature, false);
+SET_BOOL_PROP(BlackOilModel, EnableEnergy, false);
+
+//! by default, scale the energy equation by the inverse of the energy required to heat
+//! up one kg of water by 30 Kelvin. If we conserve surface volumes, this must be divided
+//! by the weight of one cubic meter of water. This is required to make the "dumb" linear
+//! solvers that do not weight the components of the solutions do the right thing.
+//! by default, don't scale the energy equation, i.e. assume that a reasonable linear
+//! solver is used. (Not scaling it makes debugging quite a bit easier.)
+SET_PROP(BlackOilModel, BlackOilEnergyScalingFactor)
+{
+private:
+    typedef typename GET_PROP_TYPE(TypeTag, Scalar) Scalar;
+    static constexpr Scalar alpha = GET_PROP_VALUE(TypeTag, BlackoilConserveSurfaceVolume) ? 1000.0 : 1.0;
+
+public:
+    static constexpr Scalar value = 1.0/(30*4184.0*alpha);
+};
+
+// by default, ebos formulates the conservation equations in terms of mass not surface
+// volumes
 SET_BOOL_PROP(BlackOilModel, BlackoilConserveSurfaceVolume, false);
 } // namespace Properties
 
@@ -214,7 +239,7 @@ class BlackOilModel
 
     typedef BlackOilSolventModule<TypeTag> SolventModule;
     typedef BlackOilPolymerModule<TypeTag> PolymerModule;
-
+    typedef BlackOilEnergyModule<TypeTag> EnergyModule;
 public:
     BlackOilModel(Simulator& simulator)
         : ParentType(simulator)
@@ -229,20 +254,11 @@ public:
 
         SolventModule::registerParameters();
         PolymerModule::registerParameters();
+        EnergyModule::registerParameters();
 
         // register runtime parameters of the VTK output modules
         Ewoms::VtkBlackOilModule<TypeTag>::registerParameters();
         Ewoms::VtkCompositionModule<TypeTag>::registerParameters();
-    }
-
-    /*!
-     * \copydoc FvBaseDiscretization::finishInit
-     */
-    void finishInit()
-    {
-        ParentType::finishInit();
-
-        Dune::FMatrixPrecision<Scalar>::set_singular_limit(1e-35);
     }
 
     /*!
@@ -268,6 +284,8 @@ public:
             return SolventModule::primaryVarName(pvIdx);
         else if (PolymerModule::primaryVarApplies(pvIdx))
             return PolymerModule::primaryVarName(pvIdx);
+        else if (EnergyModule::primaryVarApplies(pvIdx))
+            return EnergyModule::primaryVarName(pvIdx);
         else
             assert(false);
 
@@ -287,6 +305,8 @@ public:
             return SolventModule::eqName(eqIdx);
         else if (PolymerModule::eqApplies(eqIdx))
             return PolymerModule::eqName(eqIdx);
+        else if (EnergyModule::eqApplies(eqIdx))
+            return EnergyModule::eqName(eqIdx);
         else
             assert(false);
 
@@ -320,6 +340,10 @@ public:
         else if (PolymerModule::primaryVarApplies(pvIdx))
             return PolymerModule::primaryVarWeight(pvIdx);
 
+        // deal with primary variables stemming from the energy module
+        else if (EnergyModule::primaryVarApplies(pvIdx))
+            return EnergyModule::primaryVarWeight(pvIdx);
+
         // if the primary variable is either the gas saturation, Rs or Rv
         assert(Indices::compositionSwitchIdx == pvIdx);
 
@@ -351,6 +375,9 @@ public:
         else if (PolymerModule::eqApplies(eqIdx))
             return PolymerModule::eqWeight(eqIdx);
 
+        else if (EnergyModule::eqApplies(eqIdx))
+            return EnergyModule::eqWeight(eqIdx);
+
         // it is said that all kilograms are equal!
         return 1.0;
     }
@@ -369,9 +396,8 @@ public:
         unsigned dofIdx = static_cast<unsigned>(asImp_().dofMapper().index(dof));
 
         // write phase state
-        if (!outstream.good()) {
-            OPM_THROW(std::runtime_error, "Could not serialize degree of freedom " << dofIdx);
-        }
+        if (!outstream.good())
+            throw std::runtime_error("Could not serialize degree of freedom "+std::to_string(dofIdx));
 
         // write the primary variables
         const auto& priVars = this->solution(/*timeIdx=*/0)[dofIdx];
@@ -384,7 +410,7 @@ public:
 
         SolventModule::serializeEntity(*this, outstream, dof);
         PolymerModule::serializeEntity(*this, outstream, dof);
-
+        EnergyModule::serializeEntity(*this, outstream, dof);
     }
 
     /*!
@@ -405,8 +431,7 @@ public:
         auto& priVars = this->solution(/*timeIdx=*/0)[dofIdx];
         for (unsigned eqIdx = 0; eqIdx < numEq; ++eqIdx) {
             if (!instream.good())
-                OPM_THROW(std::runtime_error,
-                          "Could not deserialize degree of freedom " << dofIdx);
+                throw std::runtime_error("Could not deserialize degree of freedom "+std::to_string(dofIdx));
             instream >> priVars[eqIdx];
         }
 
@@ -418,11 +443,11 @@ public:
         instream >> pvtRegionIdx;
 
         if (!instream.good())
-            OPM_THROW(std::runtime_error,
-                      "Could not deserialize degree of freedom " << dofIdx);
+            throw std::runtime_error("Could not deserialize degree of freedom "+std::to_string(dofIdx));
 
         SolventModule::deserializeEntity(*this, instream, dof);
         PolymerModule::deserializeEntity(*this, instream, dof);
+        EnergyModule::deserializeEntity(*this, instream, dof);
 
         typedef typename PrimaryVariables::PrimaryVarsMeaning PVM;
         priVars.setPrimaryVarsMeaning(static_cast<PVM>(primaryVarsMeaning));
@@ -482,6 +507,7 @@ protected:
         // add the VTK output modules which make sense for the blackoil model
         SolventModule::registerOutputModules(*this, this->simulator_);
         PolymerModule::registerOutputModules(*this, this->simulator_);
+        EnergyModule::registerOutputModules(*this, this->simulator_);
 
         this->addOutputModule(new Ewoms::VtkBlackOilModule<TypeTag>(this->simulator_));
         this->addOutputModule(new Ewoms::VtkCompositionModule<TypeTag>(this->simulator_));

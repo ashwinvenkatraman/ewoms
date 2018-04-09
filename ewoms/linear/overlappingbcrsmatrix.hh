@@ -32,7 +32,7 @@
 #include <ewoms/linear/blacklist.hh>
 #include <ewoms/parallel/mpibuffer.hh>
 
-#include <opm/common/Valgrind.hpp>
+#include <opm/material/common/Valgrind.hpp>
 
 #include <dune/istl/scalarproducts.hh>
 #include <dune/istl/io.hh>
@@ -88,6 +88,13 @@ public:
         // matrix and the overlap
         build_(nativeMatrix);
     }
+
+    // this constructor is required to make the class compatible with the SeqILU class of
+    // Dune >= 2.7.
+    OverlappingBCRSMatrix(size_t numRows,
+                          size_t numCols,
+                          typename BCRSMatrix::BuildMode buildMode)
+    { throw std::logic_error("OverlappingBCRSMatrix objects cannot be build from scratch!"); }
 
     ~OverlappingBCRSMatrix()
     {

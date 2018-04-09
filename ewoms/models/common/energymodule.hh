@@ -32,10 +32,9 @@
 #include <ewoms/disc/common/fvbaseproperties.hh>
 #include <ewoms/models/common/quantitycallbacks.hh>
 
-#include <opm/common/Valgrind.hpp>
-#include <opm/common/Unused.hpp>
-#include <opm/common/ErrorMacros.hpp>
-#include <opm/common/Exceptions.hpp>
+#include <opm/material/common/Valgrind.hpp>
+#include <opm/material/common/Unused.hpp>
+#include <opm/material/common/Exceptions.hpp>
 
 #include <dune/common/fvector.hh>
 
@@ -507,6 +506,12 @@ struct EnergyIndices;
 template <unsigned PVOffset>
 struct EnergyIndices<PVOffset, /*enableEnergy=*/false>
 {
+    //! The index of the primary variable representing temperature
+    enum { temperatureIdx = -1000 };
+
+    //! The index of the equation representing the conservation of energy
+    enum { energyEqIdx = -1000 };
+
 protected:
     enum { numEq_ = 0 };
 };
@@ -556,8 +561,7 @@ public:
      */
     Evaluation solidInternalEnergy() const
     {
-        OPM_THROW(std::logic_error,
-                  "solidInternalEnergy() does not make sense for isothermal models");
+        throw std::logic_error("solidInternalEnergy() does not make sense for isothermal models");
     }
 
     /*!
@@ -566,8 +570,7 @@ public:
      */
     Evaluation thermalConductivity() const
     {
-        OPM_THROW(std::logic_error,
-                  "thermalConductivity() does not make sense for isothermal models");
+        throw std::logic_error("thermalConductivity() does not make sense for isothermal models");
     }
 
 protected:
@@ -730,8 +733,8 @@ public:
      */
     Scalar temperatureGradNormal() const
     {
-        OPM_THROW(std::logic_error,
-                  "Calling temperatureGradNormal() does not make sense for isothermal models");
+        throw std::logic_error("Calling temperatureGradNormal() does not make sense "
+                               "for isothermal models");
     }
 
     /*!
@@ -739,8 +742,8 @@ public:
      */
     Scalar thermalConductivity() const
     {
-        OPM_THROW(std::logic_error,
-                  "Calling thermalConductivity() does not make sense for isothermal models");
+        throw std::logic_error("Calling thermalConductivity() does not make sense for "
+                               "isothermal models");
     }
 };
 
